@@ -960,8 +960,15 @@ def _build_universe_watchlist(rs_list: list[dict]) -> list:
     """
     Topp-20 aktier från hela bevakningspoolen med 10 kolumner.
     RS är beräknad mot aktiens eget hemmaindex (^OMX / ^GSPC / ^STOXX50E).
-    Sorteras fallande efter RS — nu jämförbart över regioner.
+    Sorteras fallande efter RS — jämförbart över regioner.
+    Aktier med ADX=0 eller None filtreras bort (för lite data för meningsfullt beslut).
     """
+    if not rs_list:
+        return []
+
+    # Ta bort aktier utan giltig ADX
+    rs_list = [s for s in rs_list
+               if s.get("adx") is not None and s.get("adx", 0) > 0]
     if not rs_list:
         return []
 

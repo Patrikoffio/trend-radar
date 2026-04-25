@@ -121,10 +121,11 @@ def run(send: bool = True) -> None:
                             enriched.append(rs_item); continue
 
                         sig = calculate_signals(tkr, df_tkr, region)
-                        # Bevarar universe-RS (vs hemmaindex), inte signals-RS (vs OMXS30)
-                        sig["rs_pct"]  = rs_item["rs_pct"]
-                        sig["ret_1m"]  = rs_item.get("ret_1m", 0.0)
-                        sig["ret_3m"]  = rs_item.get("ret_3m", 0.0)
+                        # Bevarar universe-metadata och peer-RS (vs hemmaindex)
+                        sig["name"]      = rs_item.get("name", tkr)   # ← fix: namn bevaras
+                        sig["rs_pct"]    = rs_item["rs_pct"]           # peer-RS, ej OMXS30
+                        sig["ret_1m"]    = rs_item.get("ret_1m", 0.0)
+                        sig["ret_3m"]    = rs_item.get("ret_3m", 0.0)
                         sig["benchmark"] = rs_item.get("benchmark", "")
                         enriched.append(sig)
                     except Exception:
@@ -132,6 +133,33 @@ def run(send: bool = True) -> None:
 
                 universe_top20 = enriched
                 print(f"  Signaler klara ({time.time()-_t1:.1f}s)")
+
+                # ── Diagnostik: visa flödet för 5 nyckelaktier ────────────
+                print(f"\n  {'Ticker':12s} {'Namn':20s} {'Benchmark':10s} {'RS':>7s} {'ADX':>6s} {'KVAL':>5s}")
+                print(f"  {'-'*65}")
+                debug_tkrs = {"SAND.ST", "NVDA", "AAPL", "ERIC-B.ST"}
+                debug_tkrs.update(s["ticker"] for s in universe_top20[:2])  # top-2 alltid
+                for s in universe_top20:
+                    if s["ticker"] in debug_tkrs:
+                        bench = s.get("benchmark", "?")
+                        qual  = "✓" if s.get("qualified") else " "
+                        adx   = s.get("adx")
+                        adx_s = f"{adx:.1f}" if adx else "n/a"
+                        print(f"  {s['ticker']:12s} {s.get('name','?'):20s} "
+                              f"{bench:10s} {s['rs_pct']:+7.1f}% {adx_s:>6s} {qual:>5s}")
+
+                print(f"\n  Sortering: universe_top20 sorteras efter rs_pct (peer-benchmark)")
+                print(f"  Cutoff position 20: rs_pct={universe_top20[-1]['rs_pct']:+.1f}%")
+                if not any(s["ticker"]=="SAND.ST" for s in universe_top20):
+                    from pathlib import Path
+                    import json
+                    rs_c = Path("cache/universe_rs.json")
+                    if rs_c.exists():
+                        all_rs = json.loads(rs_c.read_text())["data"]
+                        pos = next((i+1 for i,x in enumerate(all_rs) if x["ticker"]=="SAND.ST"), -1)
+                        print(f"  SAND.ST: position #{pos} av {len(all_rs)} "
+                              f"(cutoff topp-20 = {all_rs[19]['rs_pct']:+.1f}%, SAND={all_rs[pos-1]['rs_pct']:+.1f}%)")
+                print()
             except Exception as e:
                 print(f"  Batch-signal FEL: {e}")
     except Exception as e:
