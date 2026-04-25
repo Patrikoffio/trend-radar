@@ -1,0 +1,21 @@
+# Hemligheter — laddas ALDRIG upp
+.env
+
+# Genererade rapporter
+rapport_*.pdf
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
