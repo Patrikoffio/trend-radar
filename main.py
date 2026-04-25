@@ -86,83 +86,101 @@ def run(send: bool = True) -> None:
         universe   = get_full_universe()
         n_universe = len(universe)
         print(f"  Hämtade {n_universe} aktier...", flush=True)
-        filtered, universe_top20 = apply_prefilter(universe, top_rs_n=20)
+        filtered, rs_all = apply_prefilter(universe)   # returnerar HELA sorterade listan
         n_filtered = len(filtered)
         print(f"  {n_universe} → {n_filtered} efter förfilter  ({time.time()-_t0:.1f}s)")
-        if universe_top20:
-            top3 = "  ".join(f"{s['ticker']} {s['rs_pct']:+.1f}%" for s in universe_top20[:3])
-            print(f"  Top-3 RS: {top3}")
 
-        # ── Berika topp-20 med fullständiga signaler ──────────────────────
-        if universe_top20:
-            print(f"  Beräknar fullständiga signaler för topp-{len(universe_top20)}...", flush=True)
+        # ── Topp-5 per region ─────────────────────────────────────────────
+        by_region: dict[str, list[dict]] = {"Sverige": [], "USA": [], "Europa": []}
+        for s in rs_all:
+            r = s.get("region", "")
+            if r in by_region and len(by_region[r]) < 5:
+                by_region[r].append(s)
+
+        # ── Berika icke-kurerade stocks med fullständiga signaler ─────────
+        curated_sigs = {s["ticker"]: s for s in all_signals}   # redan beräknade
+        to_enrich = []
+        seen_e: set[str] = set()
+        for lst in by_region.values():
+            for s in lst:
+                t = s["ticker"]
+                if t not in curated_sigs and t not in seen_e:
+                    to_enrich.append(s)
+                    seen_e.add(t)
+
+        extra_sigs: dict[str, dict] = {}
+        if to_enrich:
             _t1 = time.time()
-            tickers_20 = [s["ticker"] for s in universe_top20]
+            tickers_e = [s["ticker"] for s in to_enrich]
+            print(f"  Berikar {len(tickers_e)} icke-kurerade aktier...", flush=True)
             try:
-                raw_20 = yf.download(tickers_20, period=DATA_PERIOD,
-                                     auto_adjust=True, progress=False,
-                                     group_by="ticker")
-                enriched: list[dict] = []
-                for rs_item in universe_top20:
+                raw_e = yf.download(tickers_e, period=DATA_PERIOD,
+                                    auto_adjust=True, progress=False,
+                                    group_by="ticker")
+                for rs_item in to_enrich:
                     tkr    = rs_item["ticker"]
                     region = rs_item.get("region", "USA")
                     try:
-                        # Extrahera tickerns sub-DataFrame
-                        if len(tickers_20) == 1:
-                            df_tkr = raw_20.copy()
-                        else:
-                            lvl0 = raw_20.columns.get_level_values(0)
-                            if tkr not in lvl0:
-                                enriched.append(rs_item); continue
-                            df_tkr = raw_20[tkr].copy()
+                        df_tkr = (raw_e.copy() if len(tickers_e) == 1
+                                  else raw_e[tkr].copy()
+                                  if tkr in raw_e.columns.get_level_values(0) else None)
+                        if df_tkr is None or df_tkr.empty or len(df_tkr) < 60:
+                            extra_sigs[tkr] = rs_item; continue
                         if isinstance(df_tkr.columns, pd.MultiIndex):
                             df_tkr.columns = df_tkr.columns.get_level_values(0)
-                        if df_tkr.empty or len(df_tkr) < 60:
-                            enriched.append(rs_item); continue
-
                         sig = calculate_signals(tkr, df_tkr, region)
-                        # Bevarar universe-metadata och peer-RS (vs hemmaindex)
-                        sig["name"]      = rs_item.get("name", tkr)   # ← fix: namn bevaras
-                        sig["rs_pct"]    = rs_item["rs_pct"]           # peer-RS, ej OMXS30
-                        sig["ret_1m"]    = rs_item.get("ret_1m", 0.0)
-                        sig["ret_3m"]    = rs_item.get("ret_3m", 0.0)
-                        sig["benchmark"] = rs_item.get("benchmark", "")
-                        enriched.append(sig)
+                        sig["name"]  = rs_item.get("name", tkr)  # namn bevaras
+                        sig["ret_1m"] = rs_item.get("ret_1m", 0.0)
+                        # rs_pct och benchmark kommer redan korrekt från calculate_signals
+                        extra_sigs[tkr] = sig
                     except Exception:
-                        enriched.append(rs_item)
-
-                universe_top20 = enriched
-                print(f"  Signaler klara ({time.time()-_t1:.1f}s)")
-
-                # ── Diagnostik: visa flödet för 5 nyckelaktier ────────────
-                print(f"\n  {'Ticker':12s} {'Namn':20s} {'Benchmark':10s} {'RS':>7s} {'ADX':>6s} {'KVAL':>5s}")
-                print(f"  {'-'*65}")
-                debug_tkrs = {"SAND.ST", "NVDA", "AAPL", "ERIC-B.ST"}
-                debug_tkrs.update(s["ticker"] for s in universe_top20[:2])  # top-2 alltid
-                for s in universe_top20:
-                    if s["ticker"] in debug_tkrs:
-                        bench = s.get("benchmark", "?")
-                        qual  = "✓" if s.get("qualified") else " "
-                        adx   = s.get("adx")
-                        adx_s = f"{adx:.1f}" if adx else "n/a"
-                        print(f"  {s['ticker']:12s} {s.get('name','?'):20s} "
-                              f"{bench:10s} {s['rs_pct']:+7.1f}% {adx_s:>6s} {qual:>5s}")
-
-                print(f"\n  Sortering: universe_top20 sorteras efter rs_pct (peer-benchmark)")
-                print(f"  Cutoff position 20: rs_pct={universe_top20[-1]['rs_pct']:+.1f}%")
-                if not any(s["ticker"]=="SAND.ST" for s in universe_top20):
-                    from pathlib import Path
-                    import json
-                    rs_c = Path("cache/universe_rs.json")
-                    if rs_c.exists():
-                        all_rs = json.loads(rs_c.read_text())["data"]
-                        pos = next((i+1 for i,x in enumerate(all_rs) if x["ticker"]=="SAND.ST"), -1)
-                        print(f"  SAND.ST: position #{pos} av {len(all_rs)} "
-                              f"(cutoff topp-20 = {all_rs[19]['rs_pct']:+.1f}%, SAND={all_rs[pos-1]['rs_pct']:+.1f}%)")
-                print()
+                        extra_sigs[tkr] = rs_item
+                print(f"  Berikning klar ({time.time()-_t1:.1f}s)")
             except Exception as e:
-                print(f"  Batch-signal FEL: {e}")
+                print(f"  Berikning FEL: {e}")
+
+        def resolve(s: dict) -> dict:
+            """Hämtar bästa tillgängliga signal för en aktie."""
+            t = s["ticker"]
+            if t in curated_sigs:
+                return curated_sigs[t]
+            return extra_sigs.get(t, s)
+
+        # ── Bygg sektioner ────────────────────────────────────────────────
+        universe_sections: dict[str, list[dict]] = {
+            "Sverige": [resolve(s) for s in by_region["Sverige"]],
+            "USA":     [resolve(s) for s in by_region["USA"]],
+            "Europa":  [resolve(s) for s in by_region["Europa"]],
+        }
+
+        # Global Excellens: kvalificerade från curated + extra, sorterade på RS
+        all_enriched = list(curated_sigs.values()) + [
+            v for v in extra_sigs.values() if v["ticker"] not in curated_sigs
+        ]
+        global_qual = sorted(
+            [s for s in all_enriched if s.get("qualified")],
+            key=lambda s: s.get("rs_pct", 0), reverse=True,
+        )[:5]
+        universe_sections["global_excellence"] = global_qual
+
+        # ── Diagnostik-logg ───────────────────────────────────────────────
+        print(f"\n  {'Ticker':12s} {'Region':8s} {'Benchmark':10s} {'RS':>7s} {'ADX':>6s} {'KVAL':>4s}")
+        print(f"  {'-'*55}")
+        for debug_tkr in ["SAND.ST", "NVDA", "AAPL", "ERIC-B.ST"]:
+            s = curated_sigs.get(debug_tkr) or extra_sigs.get(debug_tkr)
+            if s:
+                adx   = s.get("adx", 0)
+                qual  = "✓" if s.get("qualified") else " "
+                bench = s.get("benchmark", "?")
+                print(f"  {debug_tkr:12s} {s.get('region','?'):8s} {bench:10s} "
+                      f"{s.get('rs_pct',0):+7.1f}% {adx:6.1f} {qual:>4s}")
+        print(f"\n  Sverige topp-5: " +
+              "  ".join(f"{s['ticker']} {s.get('rs_pct',0):+.1f}%"
+                        for s in universe_sections["Sverige"]))
+        print()
+
     except Exception as e:
+        universe_sections = {}
         print(f"  FEL: {e}")
     print()
 
@@ -219,7 +237,7 @@ def run(send: bool = True) -> None:
 
     pdf_path = f"rapport_{date_str}.pdf"
     generate_pdf(results, pdf_path, dataframes, portfolio, mc,
-                 universe_stats, universe_top20 if universe_top20 else None)
+                 universe_stats, universe_sections if universe_sections else None)
 
     if send:
         send_email(pdf_path, date_str, _mc_summary())

@@ -956,6 +956,113 @@ def _build_forecast(fwd: dict | None) -> list:
     ])]
 
 
+def _build_regional_watchlist(sections: dict[str, list[dict]]) -> list:
+    """
+    Visar topp-kandidater per region + global excellens.
+    Varje region separeras av en färgad rubrikrad.
+    RS är beräknad mot aktiens eget hemmaindex.
+    """
+    SECTION_META = {
+        "Sverige":          ("SVERIGE  —  Topp 5  ·  RS vs OMXS30",       HexColor("#005B9F")),
+        "USA":              ("USA  —  Topp 5  ·  RS vs S&P 500",           HexColor("#B22234")),
+        "Europa":           ("EUROPA  —  Topp 5  ·  RS vs STOXX50E",       HexColor("#003399")),
+        "global_excellence":("GLOBAL EXCELLENS  —  Topp 5 kvalificerade  ·  "
+                             "KONF=3, ADX >= 22, RS >= 3%",                 HexColor("#92400E")),
+    }
+    ORDER = ["Sverige", "USA", "Europa", "global_excellence"]
+
+    N_COLS = 10
+    cw     = [cm * x for x in [1.7, 2.6, 1.1, 1.7, 1.2, 1.2, 1.4, 1.3, 1.3, 2.1]]
+
+    col_header = [_p(h, CH) for h in
+                  ["TICKER", "BOLAG", "REG", "PRIS",
+                   "KONF", "ADX", "RS", "1M", "KVAL", "TREND"]]
+
+    all_rows:   list = [col_header]
+    div_rows:   list[tuple[int, tuple]] = []   # (row_idx, color)
+
+    def _stock_row(s: dict) -> list:
+        region_abbr = {"Sverige": "SWE", "USA": "USA", "Europa": "EUR"}.get(
+            s.get("region", ""), s.get("region", "")[:3].upper()
+        )
+        conf   = s.get("confluence")
+        adx    = s.get("adx")
+        qual   = s.get("qualified")
+        ret_1m = s.get("ret_1m", 0.0)
+        rs     = s.get("rs_pct", 0.0)
+
+        conf_html  = _confluence_badge(conf) if conf is not None else "—"
+        adx_str    = f"{adx:.1f}" if (adx is not None and adx > 0) else "—"
+        kval_html  = ('<font color="#15803D"><b>✓</b></font>' if qual is True
+                      else '<font color="#78716C">–</font>' if qual is False else "—")
+        trend_html = ('<font color="#15803D"><b>Stark</b></font>'
+                      if (adx is not None and adx >= BUY_ADX_MIN)
+                      else '<font color="#78716C">Svag</font>')
+
+        return [
+            _p(s["ticker"],                              CB),
+            _p(s.get("name", s["ticker"])[:22],          CN),
+            _p(region_abbr,                              CC),
+            _p(f"{s['price']:.2f}",                      CR),
+            _p(conf_html if isinstance(conf_html, str) else "—", CBC),
+            _p(adx_str,                                  CR),
+            _p(_html_color(rs),                           CBR),
+            _p(_html_color(ret_1m, fmt=".1f"),             CBR),
+            _p(kval_html,                                CC),
+            _p(trend_html,                               CN),
+        ]
+
+    for section_key in ORDER:
+        stock_list = sections.get(section_key, [])
+        if not stock_list:
+            continue
+        # Filtrera bort aktier utan giltig ADX
+        stock_list = [s for s in stock_list
+                      if s.get("adx") is None or s.get("adx", 0) > 0]
+        if not stock_list:
+            continue
+
+        label, color = SECTION_META[section_key]
+        div_idx = len(all_rows)
+        div_rows.append((div_idx, color))
+        all_rows.append([_p(f"  {label}",
+                            _ps(f"dr{div_idx}", fontName=_SANS_BOLD, fontSize=8.5,
+                                textColor=WHITE, leading=12))]
+                        + [""] * (N_COLS - 1))
+
+        for s in stock_list:
+            all_rows.append(_stock_row(s))
+
+    if len(all_rows) <= 1:
+        return []
+
+    # ── Bygg TableStyle ────────────────────────────────────────────────────
+    base = _base_table_style()
+    t    = LongTable(all_rows, colWidths=cw, repeatRows=1)
+
+    extra_styles: list = []
+    for div_idx, color in div_rows:
+        extra_styles += [
+            ("SPAN",          (0, div_idx), (-1, div_idx)),
+            ("BACKGROUND",    (0, div_idx), (-1, div_idx), color),
+            ("TEXTCOLOR",     (0, div_idx), (-1, div_idx), WHITE),
+            ("LEFTPADDING",   (0, div_idx), (-1, div_idx), 8),
+            ("TOPPADDING",    (0, div_idx), (-1, div_idx), 5),
+            ("BOTTOMPADDING", (0, div_idx), (-1, div_idx), 5),
+        ]
+
+    t.setStyle(TableStyle(base + extra_styles))
+
+    n_total = sum(len(sections.get(k, [])) for k in ORDER)
+    return [
+        _p("TOPP KANDIDATER per region + global excellens  —  "
+           "RS vs eget hemmaindex (^OMX / ^GSPC / ^STOXX50E)", SECHEAD_S),
+        _hr(),
+        t,
+        _spacer(6),
+    ]
+
+
 def _build_universe_watchlist(rs_list: list[dict]) -> list:
     """
     Topp-20 aktier från hela bevakningspoolen med 10 kolumner.
@@ -1057,7 +1164,7 @@ def generate_pdf(
     portfolio: list[dict] | None = None,
     market_context: dict | None = None,
     universe_stats: dict | None = None,
-    universe_rs: list[dict] | None = None,
+    universe_sections: dict | None = None,
 ) -> None:
     _tmp_files.clear()
 
@@ -1124,9 +1231,9 @@ def generate_pdf(
     # ──────────────────────────────────────────────────────────────────────
     story += _build_portfolio(portfolio)
     story += _build_reserves(overflow, near_buys)
-    # Bevakningslistan: använd universum-RS om tillgänglig, annars curated
-    if universe_rs:
-        story += _build_universe_watchlist(universe_rs)
+    # Bevakningslistan: regionala sektioner om tillgängliga, annars curated
+    if universe_sections:
+        story += _build_regional_watchlist(universe_sections)
     else:
         story += _build_watchlist(all_signals)
     story += _build_disclaimer()

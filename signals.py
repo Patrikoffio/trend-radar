@@ -49,8 +49,6 @@ SECTOR_ETF: dict[str, str] = {
     "SAP":        "XLK",
 }
 
-BENCHMARK     = "^OMX"   # RS mäts alltid mot OMXS30
-
 MA_FAST       = 50
 MA_SLOW       = 200
 ADX_PERIOD    = 14
@@ -276,8 +274,14 @@ def calculate_signals(ticker: str, df: pd.DataFrame, region: str) -> dict:
 
     confluence = macro_score + sector_score + tech_score
 
-    # Relativ styrka mot OMXS30 (fast benchmark)
-    bench_df = _fetch(BENCHMARK)
+    # Relativ styrka mot regionens hemmaindex (^OMX / ^GSPC / ^STOXX50E)
+    bench_sym = HOME_INDEX.get(region, "^GSPC")
+    bench_df  = _fetch(bench_sym)
+    if bench_df is None:
+        fb = HOME_INDEX_FALLBACK.get(region)
+        if fb:
+            bench_df  = _fetch(fb)
+            bench_sym = fb
     stock_3m = _return_3m(df)
     rs_pct   = stock_3m - _return_3m(bench_df) if bench_df is not None else 0.0
 
@@ -338,6 +342,7 @@ def calculate_signals(ticker: str, df: pd.DataFrame, region: str) -> dict:
         "confluence":      confluence,
         "adx":             adx,
         "rs_pct":          rs_pct,
+        "benchmark":       bench_sym,
         "stock_3m":        stock_3m,
         "atr":             atr_val,
         "stop_loss":       stop_loss,

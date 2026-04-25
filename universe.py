@@ -254,7 +254,7 @@ def _fetch_benchmark_3m(symbols: list[str], period: str = "6mo") -> dict[str, fl
 
 
 def apply_prefilter(universe: dict[str, dict],
-                    top_rs_n: int = 20) -> tuple[dict[str, dict], list[dict]]:
+                    top_rs_n: int | None = None) -> tuple[dict[str, dict], list[dict]]:
     """
     ETT batch-nedladdningspass (6 månader) som:
       1. Filtrerar universum: behåll om (a) 1M avkastning > 0% ELLER (b) volym > median
@@ -356,7 +356,7 @@ def apply_prefilter(universe: dict[str, dict],
     _save(RS_CACHE,     rs_all,  ttl=CACHE_1D)
 
     filtered = {tkr: universe[tkr] for tkr in passed if tkr in universe}
-    return filtered, rs_all[:top_rs_n]
+    return filtered, (rs_all if top_rs_n is None else rs_all[:top_rs_n])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
