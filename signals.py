@@ -104,8 +104,21 @@ def _close(df: pd.DataFrame) -> pd.Series:
 # --------------------------------------------------------------------------- #
 
 def _wilder(series: pd.Series, period: int) -> pd.Series:
-    """Wilders utjämning — ekvivalent med EMA alpha=1/period."""
-    return series.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    """
+    Wilders utjämning med korrekt SMA-initialisering.
+    Seed = SMA(N) av de N första staplarna, sedan EWM alpha=1/N.
+    Skillnaden mot plain ewm konvergerar inom ~3×period staplar.
+    """
+    if len(series) < period:
+        return pd.Series(np.nan, index=series.index)
+    # Skapa en delad serie som startar vid position N-1 med SMA-seed
+    seed = float(series.iloc[:period].mean())
+    tail = series.iloc[period - 1:].copy()
+    tail.iloc[0] = seed                                # sätt SMA som seed
+    smoothed = tail.ewm(alpha=1 / period, adjust=False).mean()
+    result = pd.Series(np.nan, index=series.index)
+    result.iloc[period - 1:] = smoothed.values
+    return result
 
 
 def _atr_series(df: pd.DataFrame, period: int = ATR_PERIOD) -> pd.Series:
@@ -120,10 +133,17 @@ def _atr_series(df: pd.DataFrame, period: int = ATR_PERIOD) -> pd.Series:
     return _wilder(tr, period)
 
 
-def _adx_value(df: pd.DataFrame, period: int = ADX_PERIOD) -> float:
+def _adx_value(df: pd.DataFrame, period: int = ADX_PERIOD) -> float | None:
+    """
+    ADX med Wilders utjämning.
+    Returnerar None om < 3×period staplar finns (instabilt resultat).
+    """
     high  = df["High"] if not isinstance(df["High"], pd.DataFrame) else df["High"].iloc[:, 0]
     low   = df["Low"]  if not isinstance(df["Low"],  pd.DataFrame) else df["Low"].iloc[:, 0]
     close = _close(df)
+
+    if len(close) < 3 * period:
+        return None
 
     up   = high - high.shift(1)
     down = low.shift(1) - low
@@ -143,7 +163,8 @@ def _adx_value(df: pd.DataFrame, period: int = ADX_PERIOD) -> float:
     denom = (plus_di + minus_di).replace(0, np.nan)
     dx    = 100 * (plus_di - minus_di).abs() / denom
     adx   = _wilder(dx.fillna(0), period)
-    return float(adx.iloc[-1])
+    val   = float(adx.iloc[-1])
+    return val if np.isfinite(val) else None
 
 
 def _return_3m(df: pd.DataFrame) -> float:
@@ -225,9 +246,13 @@ def _tech_layer(df: pd.DataFrame) -> tuple[int, float, str]:
     if len(close) < MA_SLOW + 5:
         return 0, 0.0, "för lite data"
 
-    ma50  = float(close.rolling(MA_FAST).mean().iloc[-1])
-    ma200 = float(close.rolling(MA_SLOW).mean().iloc[-1])
-    adx   = _adx_value(df)
+    ma50    = float(close.rolling(MA_FAST).mean().iloc[-1])
+    ma200   = float(close.rolling(MA_SLOW).mean().iloc[-1])
+    adx_raw = _adx_value(df)
+    adx     = adx_raw if adx_raw is not None else 0.0
+
+    if adx_raw is None:
+        return (0 if ma50 > ma200 else -1), 0.0, "ADX: för lite data"
 
     if ma50 > ma200 and adx >= BUY_ADX_MIN:
         return +1, adx, f"MA50>MA200 + ADX={adx:.1f}"
@@ -280,7 +305,8 @@ def calculate_signals(ticker: str, df: pd.DataFrame, region: str) -> dict:
     # Kompakt sammanfattning för PDF-tabellen
     layer_str = f"M{macro_score:+d} S{sector_score:+d} T{tech_score:+d}"
     qual_tag  = "✓KVAL" if qualified else ""
-    reasons   = [s for s in [layer_str, f"ADX={adx:.0f}", f"RS={rs_pct:+.1f}%", qual_tag] if s]
+    adx_str   = f"ADX={adx:.1f}" if adx > 0 else "ADX=n/a"
+    reasons   = [s for s in [layer_str, adx_str, f"RS={rs_pct:+.1f}%", qual_tag] if s]
 
     # Legacy-fält som report.py använder
     sma50  = float(close.rolling(MA_FAST).mean().iloc[-1]) if len(close) >= MA_FAST else None
@@ -380,6 +406,24 @@ def size_positions(all_signals: list[dict]) -> list[dict]:
 # --------------------------------------------------------------------------- #
 
 if __name__ == "__main__":
+    ALL_TICKERS = [
+        ("VOLV-B.ST","Sverige"),("ATCO-A.ST","Sverige"),("SAND.ST","Sverige"),
+        ("HEXA-B.ST","Sverige"),("INVE-B.ST","Sverige"),("ERIC-B.ST","Sverige"),
+        ("NVDA","USA"),("MSFT","USA"),("AAPL","USA"),("BRK-B","USA"),
+        ("ASML","Europa"),("NOVO-B.CO","Europa"),("MC.PA","Europa"),("SAP","Europa"),
+    ]
+    adx_vals = []
+    for t, r in ALL_TICKERS:
+        raw = yf.download(t, period="14mo", auto_adjust=True, progress=False)
+        if isinstance(raw.columns, pd.MultiIndex): raw.columns = raw.columns.get_level_values(0)
+        v = _adx_value(raw)
+        if v is not None: adx_vals.append(v)
+    if adx_vals:
+        print(f"ADX-distribution ({len(adx_vals)} aktier): "
+              f"snitt={np.mean(adx_vals):.1f}  std={np.std(adx_vals):.1f}  "
+              f"min={min(adx_vals):.1f}  max={max(adx_vals):.1f}")
+        print()
+
     TEST = [("SAND.ST", "Sverige"), ("NVDA", "USA")]
 
     for ticker, region in TEST:

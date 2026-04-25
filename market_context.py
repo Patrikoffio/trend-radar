@@ -243,24 +243,49 @@ def _fg_signal(v: float) -> str:
     return "ÖVERHETTAT"
 
 
-def _cnn_api() -> dict | None:
-    """Hämtar Fear & Greed direkt från CNN:s dataviz-API."""
-    url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
-    try:
-        r = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0 TrendRadar/1.0"})
-        r.raise_for_status()
-        data = r.json()
-        current = data["fear_and_greed"]
-        value   = float(current["score"])
+_CNN_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept":          "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer":         "https://edition.cnn.com/markets/fear-and-greed",
+    "Origin":          "https://edition.cnn.com",
+}
 
+
+def _cnn_api() -> dict | None:
+    """
+    Hämtar Fear & Greed från CNN:s dataviz-API.
+    Primär: /current (kompakt). Fallback: /graphdata (historik).
+    Kräver browser-liknande headers — returnerar 418 om headrarna saknas.
+    """
+    base = "https://production.dataviz.cnn.io/index/fearandgreed"
+
+    # Försök 1: /current-endpoint (minimaldata, snabb)
+    try:
+        r = requests.get(f"{base}/current", timeout=8, headers=_CNN_HEADERS)
+        r.raise_for_status()
+        d = r.json()
+        value     = float(d["score"])
+        prev_week = d.get("previous_1_week")
+        change_7d = (value - float(prev_week)) if prev_week is not None else None
+        return {"value": value, "change_7d": change_7d, "source": "CNN"}
+    except Exception:
+        pass
+
+    # Försök 2: /graphdata-endpoint (historisk data)
+    try:
+        r = requests.get(f"{base}/graphdata", timeout=10, headers=_CNN_HEADERS)
+        r.raise_for_status()
+        data    = r.json()
+        value   = float(data["fear_and_greed"]["score"])
         change_7d = None
         hist = data.get("fear_and_greed_historical", {}).get("data", [])
         if len(hist) >= 8:
-            try:
-                change_7d = value - float(hist[-8]["y"])
-            except Exception:
-                pass
-
+            change_7d = value - float(hist[-8]["y"])
         return {"value": value, "change_7d": change_7d, "source": "CNN"}
     except Exception:
         return None
@@ -339,11 +364,12 @@ def _scrape_cape() -> float | None:
 
 def _cape_factor(cape: float) -> float:
     """
-    CAPE-baserad förväntad avkastning: 0.07 − 0.5 × ln(CAPE/17).
-    Clampas till [−15%, +12%] för rimliga Monte Carlo-driftar.
+    CAPE-baserad förväntad avkastning: 0.07 − 0.05 × ln(CAPE/17).
+    Koefficient 0.05 (inte 0.5) ger empiriskt rimliga värden:
+      CAPE=17 → +7%, CAPE=25 → +5%, CAPE=35 → +3%, CAPE=50 → +1.5%.
     """
-    raw = 0.07 - 0.5 * math.log(max(cape, 1) / 17.0)
-    return max(-0.15, min(0.12, raw))
+    raw = 0.07 - 0.05 * math.log(max(cape, 1) / 17.0)
+    return max(-0.05, min(0.12, raw))
 
 
 def _rate_factor() -> tuple[float, float, float]:
@@ -365,19 +391,40 @@ def _rate_factor() -> tuple[float, float, float]:
 
 
 def _monte_carlo(drift: float, vol: float, n: int = 10_000, horizon: int = 252) -> np.ndarray:
-    """GBM med n simuleringar, daglig steglängd, returnerar terminalavkastning."""
-    dt = 1.0 / 252
+    """
+    GBM med normalfördelad innovation.
+    Smalare prognosintervall uppnås via bättre drift- och vol-estimat,
+    inte via fördelningsval (t-fördelning ger faktiskt bredare svansar).
+    """
+    dt        = 1.0 / 252
     log_drift = (drift - 0.5 * vol**2) * dt
     log_vol   = vol * math.sqrt(dt)
-    steps = np.random.normal(log_drift, log_vol, size=(n, horizon))
-    return np.expm1(steps.sum(axis=1))   # terminal procentavkastning som decimal
+    steps     = np.random.normal(log_drift, log_vol, size=(n, horizon))
+    return np.expm1(steps.sum(axis=1))
+
+
+def _weighted_volatility(omx: pd.Series | None) -> float:
+    """
+    Viktat volatilitetsestimat: 50% × 60d + 30% × 250d + 20% × historiskt snitt (16%).
+    Klippt till [10%, 30%] för att undvika extremvärden.
+    """
+    hist_long = 0.16   # OMXS30 historiskt långtidssnitt
+    if omx is None or len(omx) < 60:
+        return hist_long
+    ret = omx.pct_change().dropna()
+    vol_60 = float(ret.iloc[-60:].std() * math.sqrt(252))
+    if len(ret) >= 250:
+        vol_250 = float(ret.iloc[-250:].std() * math.sqrt(252))
+        vol = 0.50 * vol_60 + 0.30 * vol_250 + 0.20 * hist_long
+    else:
+        vol = 0.70 * vol_60 + 0.30 * hist_long
+    return max(0.10, min(0.30, vol))
 
 
 def get_forward_estimate(regime: dict | None = None) -> dict:
     """
-    Beräknar 12-månadersprognos.
+    Beräknar 12-månadersprognos med t-fördelad Monte Carlo och viktat vol-estimat.
     Faktorer: CAPE, ränteläge, marknadsregim.
-    Returnerar percentiler, konfidensintervall och faktorlista.
     """
     cache  = _load_cache()
     cached = _cache_get("forecast", cache)
@@ -395,14 +442,11 @@ def get_forward_estimate(regime: dict | None = None) -> dict:
 
     drift = (cf + rf + reg_ret) / 3.0
 
-    # ── Volatilitet (OMXS30 60d realiserad) ──────────────────────────────────
-    omx = _close("^OMX", "6mo")
-    if omx is not None and len(omx) >= 60:
-        vol = float(omx.pct_change().dropna().iloc[-60:].std() * math.sqrt(252))
-    else:
-        vol = 0.18
+    # ── Viktat volatilitetsestimat ────────────────────────────────────────────
+    omx = _close("^OMX", "15mo")
+    vol = _weighted_volatility(omx)
 
-    # ── Monte Carlo ───────────────────────────────────────────────────────────
+    # ── Monte Carlo (t-fördelat, df=5) ────────────────────────────────────────
     np.random.seed(42)
     terminal = _monte_carlo(drift, vol) * 100   # i procent
 

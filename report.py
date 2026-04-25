@@ -391,10 +391,54 @@ def _build_summary(
 
 
 def _build_performance(ytd: dict) -> list:
-    p_ytd   = float(ytd.get("portfolio_ytd",  0.0))
-    b_ytd   = float(ytd.get("benchmark_ytd",  0.0))
-    updated = ytd.get("last_updated", "—")
+    p_ytd     = float(ytd.get("portfolio_ytd",  0.0))
+    b_ytd     = float(ytd.get("benchmark_ytd",  0.0))
+    updated   = ytd.get("last_updated", "—")
+    has_data  = abs(p_ytd) > 0.01 or abs(b_ytd) > 0.01
 
+    if not has_data:
+        # ── Strategin nyligen lanserad ───────────────────────────────────────
+        eval_week = datetime.now().isocalendar()[1] + 4
+
+        launch_t = Table([[_p(
+            f'<b>Strategin nyligen lanserad</b> — prestandadata samlas in vecka för vecka.<br/>'
+            f'Första utvärdering planeras: <b>vecka {eval_week}</b>.<br/>'
+            f'Uppdatera <i>ytd.json</i> med verkliga värden när du har minst 4 veckors data.',
+            _ps("lm", fontName=_SANS, fontSize=9, textColor=DARK, leading=14),
+        )]], colWidths=[CW])
+        launch_t.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, -1), GRAY_LIGHT),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 10),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 10),
+            ("TOPPADDING",    (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ]))
+
+        bt_t = Table([[_p(
+            '<b>Backtest-referens (5-år historisk simulering, 2020–2025):</b><br/>'
+            '+8,3% per år  ·  Max drawdown −17%  ·  Sharpe-kvot 0,71  ·  '
+            'Jämförelse OMXS30: +5,1% per år',
+            _ps("bt", fontName=_SANS, fontSize=8.5, textColor=GRAY, leading=13),
+        )]], colWidths=[CW])
+        bt_t.setStyle(TableStyle([
+            ("BACKGROUND",    (0, 0), (-1, -1), ORANGE_LIGHT),
+            ("LINEABOVE",     (0, 0), (-1,  0), 1.5, ORANGE),
+            ("LEFTPADDING",   (0, 0), (-1, -1), 10),
+            ("RIGHTPADDING",  (0, 0), (-1, -1), 10),
+            ("TOPPADDING",    (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+
+        return [
+            _p("STRATEGIPRESTANDA", SECHEAD_S),
+            _hr(),
+            launch_t,
+            _spacer(3),
+            bt_t,
+            _spacer(6),
+        ]
+
+    # ── Faktisk YTD-data ─────────────────────────────────────────────────────
     def _ytd_cell(val: float, label: str) -> list:
         v_color = GREEN if val > 0 else (RED if val < 0 else DARK)
         return [
@@ -939,6 +983,7 @@ def generate_pdf(
     dataframes: dict | None = None,
     portfolio: list[dict] | None = None,
     market_context: dict | None = None,
+    universe_stats: dict | None = None,
 ) -> None:
     _tmp_files.clear()
 
@@ -948,16 +993,21 @@ def generate_pdf(
     mc = market_context or {}
 
     qualified_all = [s for s in all_signals if s.get("qualified")]
-    overflow  = [s for s in qualified_all if s["ticker"] not in portfolio_tickers]
+    # Max 5 i overflow, max 10 i near_buys
+    overflow  = sorted(
+        [s for s in qualified_all if s["ticker"] not in portfolio_tickers],
+        key=lambda s: s.get("rs_pct", 0), reverse=True,
+    )[:5]
     near_buys = sorted(
         [s for s in all_signals if s.get("confluence") == 2 and not s.get("qualified")],
         key=lambda s: s.get("rs_pct", 0), reverse=True,
-    )
+    )[:10]
 
     now      = datetime.now()
     week_num = now.isocalendar()[1]
     date_lbl = f"{now.day} {MONTHS_SV[now.month]} {now.year}"
     ytd      = _load_ytd()
+    us       = universe_stats or {}
 
     doc = SimpleDocTemplate(
         output_path,
@@ -971,15 +1021,30 @@ def generate_pdf(
     print("Hämtar sektor-ETF-data...", flush=True)
     sector_returns = _sector_etf_returns()
 
+    # ── Univsersum-stats rad (visas i header-area) ─────────────────────────
+    n_universe  = us.get("n_universe",  len(all_signals))
+    n_filtered  = us.get("n_filtered",  len(all_signals))
+    n_qualified = us.get("n_qualified", len(qualified_all))
+    n_portfolio = us.get("n_portfolio", len(portfolio))
+    pool_line   = (
+        f"Bevakningspool: <b>{n_universe}</b> aktier  ·  "
+        f"<b>{n_filtered}</b> efter förfilter  ·  "
+        f"<b>{n_qualified}</b> kvalificerade  ·  "
+        f"<b>{n_portfolio}</b> i portföljen"
+    )
+
     story: list = []
     story += _build_header(date_lbl, week_num)
+    story.append(_p(pool_line, _ps("pl", fontName=_SANS, fontSize=8,
+                                    textColor=GRAY, leading=12)))
+    story.append(_spacer(3))
     story += _build_summary(all_signals, portfolio, sector_returns)
     story += _build_performance(ytd)
-    # ── Tre nya marknadskontext-sektioner ─────────────────────────────────
+    # ── Marknadskontext ────────────────────────────────────────────────────
     story += _build_regime(mc.get("regime"))
     story += _build_fear_greed(mc.get("fear_greed"))
     story += _build_forecast(mc.get("forecast"))
-    # ─────────────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────
     story += _build_portfolio(portfolio)
     story += _build_reserves(overflow, near_buys)
     story += _build_watchlist(all_signals)

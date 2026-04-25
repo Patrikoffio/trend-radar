@@ -4,6 +4,7 @@
 
 # Genererad cache
 .market_cache.json
+cache/
 
 # Genererade rapporter
 rapport_*.pdf

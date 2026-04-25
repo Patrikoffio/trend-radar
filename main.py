@@ -7,6 +7,7 @@ Schemalägg varje söndag med cron (Mac/Linux):
 """
 
 import sys
+import time
 from datetime import datetime
 
 import pandas as pd
@@ -16,6 +17,7 @@ from email_sender import send_email
 from market_context import get_fear_greed, get_forward_estimate, get_regime
 from report import generate_pdf
 from signals import calculate_signals, size_positions
+from universe import apply_prefilter, get_full_universe
 
 STOCKS: dict[str, list[str]] = {
     "Sverige": ["VOLV-B.ST", "ATCO-A.ST", "SAND.ST", "HEXA-B.ST", "INVE-B.ST", "ERIC-B.ST"],
@@ -75,6 +77,27 @@ def run(send: bool = True) -> None:
         print("  Inga aktier kvalificerar sig denna vecka.")
     print()
 
+    # ── Universum-statistik ────────────────────────────────────────────────
+    print("=== Bevakningspool ===")
+    _t0 = time.time()
+    n_universe = n_filtered = 0
+    try:
+        universe = get_full_universe()
+        n_universe = len(universe)
+        filtered  = apply_prefilter(universe)
+        n_filtered = len(filtered)
+        print(f"  Total: {n_universe}  →  efter förfilter: {n_filtered}  ({time.time()-_t0:.1f}s)")
+    except Exception as e:
+        print(f"  FEL: {e}")
+    print()
+
+    universe_stats = {
+        "n_universe":  n_universe,
+        "n_filtered":  n_filtered,
+        "n_qualified": sum(1 for s in all_signals if s.get("qualified")),
+        "n_portfolio": len(portfolio),
+    }
+
     # ── Marknadskontext ────────────────────────────────────────────────────
     print("=== Marknadskontext ===")
     mc: dict = {}
@@ -120,7 +143,7 @@ def run(send: bool = True) -> None:
         return "\n".join(lines) + "\n"
 
     pdf_path = f"rapport_{date_str}.pdf"
-    generate_pdf(results, pdf_path, dataframes, portfolio, mc)
+    generate_pdf(results, pdf_path, dataframes, portfolio, mc, universe_stats)
 
     if send:
         send_email(pdf_path, date_str, _mc_summary())
