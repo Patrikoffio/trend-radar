@@ -13,7 +13,9 @@ from pathlib import Path
 import resend
 from dotenv import load_dotenv
 
-load_dotenv()
+# Ladda .env lokalt om filen finns — på GitHub Actions används miljövariabler direkt
+if Path(".env").exists():
+    load_dotenv()
 
 SENDER = "onboarding@resend.dev"
 
@@ -23,9 +25,9 @@ def send_email(pdf_path: str, date_str: str) -> None:
     recipient = os.getenv("RECIPIENT_EMAIL", "")
 
     if not api_key:
-        raise ValueError("Saknar RESEND_API_KEY i .env-filen.")
+        raise ValueError("Miljövariabeln RESEND_API_KEY saknas.")
     if not recipient:
-        raise ValueError("Saknar RECIPIENT_EMAIL i .env-filen.")
+        raise ValueError("Miljövariabeln RECIPIENT_EMAIL saknas.")
 
     resend.api_key = api_key
 
