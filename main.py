@@ -90,11 +90,11 @@ def run(send: bool = True) -> None:
         n_filtered = len(filtered)
         print(f"  {n_universe} → {n_filtered} efter förfilter  ({time.time()-_t0:.1f}s)")
 
-        # ── Topp-5 per region ─────────────────────────────────────────────
+        # ── Topp-10 per region som kandidater (filtreras ner till 5 med KONF≥1) ──
         by_region: dict[str, list[dict]] = {"Sverige": [], "USA": [], "Europa": []}
         for s in rs_all:
             r = s.get("region", "")
-            if r in by_region and len(by_region[r]) < 5:
+            if r in by_region and len(by_region[r]) < 10:   # tag topp-10 för headroom
                 by_region[r].append(s)
 
         # ── Berika icke-kurerade stocks med fullständiga signaler ─────────
@@ -146,22 +146,34 @@ def run(send: bool = True) -> None:
                 return curated_sigs[t]
             return extra_sigs.get(t, s)
 
-        # ── Bygg sektioner ────────────────────────────────────────────────
+        # ── Bygg sektioner: topp-5 per region med KONF ≥ 1 ──────────────────
+        def _top5_konf1(region_name: str) -> list[dict]:
+            """Löser, filtrerar KONF≥1, returnerar topp-5 sorterat på RS."""
+            resolved = [resolve(s) for s in by_region[region_name]]
+            passed   = [s for s in resolved if s.get("confluence", 0) >= 1]
+            # Sortera efter rs_pct (peer-RS) fallande
+            passed.sort(key=lambda s: s.get("rs_pct", 0), reverse=True)
+            return passed[:5]
+
         universe_sections: dict[str, list[dict]] = {
-            "Sverige": [resolve(s) for s in by_region["Sverige"]],
-            "USA":     [resolve(s) for s in by_region["USA"]],
-            "Europa":  [resolve(s) for s in by_region["Europa"]],
+            "Sverige": _top5_konf1("Sverige"),
+            "USA":     _top5_konf1("USA"),
+            "Europa":  _top5_konf1("Europa"),
         }
 
-        # Global Excellens: kvalificerade från curated + extra, sorterade på RS
+        # Global Excellens: KONF ≥ 2 OCH RS ≥ 5% (fler kandidater än bara portföljen)
         all_enriched = list(curated_sigs.values()) + [
             v for v in extra_sigs.values() if v["ticker"] not in curated_sigs
         ]
-        global_qual = sorted(
-            [s for s in all_enriched if s.get("qualified")],
+        global_strong = sorted(
+            [s for s in all_enriched
+             if s.get("confluence", 0) >= 2 and s.get("rs_pct", 0) >= 5.0],
             key=lambda s: s.get("rs_pct", 0), reverse=True,
         )[:5]
-        universe_sections["global_excellence"] = global_qual
+        # Visa sektionen bara om den innehåller mer än portföljens aktier
+        portfolio_tickers_set = {p["ticker"] for p in portfolio}
+        has_new = any(s["ticker"] not in portfolio_tickers_set for s in global_strong)
+        universe_sections["global_excellence"] = global_strong if global_strong else []
 
         # ── Diagnostik-logg ───────────────────────────────────────────────
         print(f"\n  {'Ticker':12s} {'Region':8s} {'Benchmark':10s} {'RS':>7s} {'ADX':>6s} {'KVAL':>4s}")
@@ -174,8 +186,8 @@ def run(send: bool = True) -> None:
                 bench = s.get("benchmark", "?")
                 print(f"  {debug_tkr:12s} {s.get('region','?'):8s} {bench:10s} "
                       f"{s.get('rs_pct',0):+7.1f}% {adx:6.1f} {qual:>4s}")
-        print(f"\n  Sverige topp-5: " +
-              "  ".join(f"{s['ticker']} {s.get('rs_pct',0):+.1f}%"
+        print(f"\n  Sverige topp-5 (KONF≥1): " +
+              "  ".join(f"{s['ticker']} RS={s.get('rs_pct',0):+.1f}% KONF={s.get('confluence',0)}"
                         for s in universe_sections["Sverige"]))
         print()
 

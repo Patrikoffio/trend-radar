@@ -79,6 +79,7 @@ ROW_H   = 6 * mm
 # Statiska mappings (kopierade hit för att undvika cirkulär import)
 # --------------------------------------------------------------------------- #
 COMPANY_NAMES: dict[str, str] = {
+    # ── Kurerade 14 ────────────────────────────────────────────────────────
     "VOLV-B.ST":  "Volvo B",
     "ATCO-A.ST":  "Atlas Copco A",
     "SAND.ST":    "Sandvik",
@@ -93,6 +94,73 @@ COMPANY_NAMES: dict[str, str] = {
     "NOVO-B.CO":  "Novo Nordisk B",
     "MC.PA":      "LVMH",
     "SAP":        "SAP SE",
+    # ── OMX Large Cap ──────────────────────────────────────────────────────
+    "ABB.ST":     "ABB Ltd",
+    "ALFA.ST":    "Alfa Laval",
+    "ALIV-SDB.ST":"Autoliv",
+    "ASSA-B.ST":  "Assa Abloy B",
+    "ATCO-B.ST":  "Atlas Copco B",
+    "AXFO.ST":    "Axfood",
+    "BOL.ST":     "Boliden",
+    "EQT.ST":     "EQT",
+    "ESSITY-B.ST":"Essity B",
+    "GETI-B.ST":  "Getinge B",
+    "HM-B.ST":    "H&M B",
+    "HUSQ-B.ST":  "Husqvarna B",
+    "INDU-A.ST":  "Industrivärden A",
+    "INDU-C.ST":  "Industrivärden C",
+    "INVE-A.ST":  "Investor A",
+    "KINV-B.ST":  "Kinnevik B",
+    "LATO-B.ST":  "Latour B",
+    "LIFCO-B.ST": "Lifco B",
+    "LUND-B.ST":  "Lundbergföretagen",
+    "NCC-B.ST":   "NCC B",
+    "NDA-SE.ST":  "Nordea",
+    "NIBE-B.ST":  "NIBE B",
+    "RATO-B.ST":  "Ratos B",
+    "SAAB-B.ST":  "Saab B",
+    "SCA-B.ST":   "SCA B",
+    "SEB-A.ST":   "SEB A",
+    "SECU-B.ST":  "Securitas B",
+    "SHB-A.ST":   "Handelsbanken A",
+    "SINCH.ST":   "Sinch",
+    "SKA-B.ST":   "Skanska B",
+    "SKF-B.ST":   "SKF B",
+    "SOBI.ST":    "Swedish Orphan",
+    "SSAB-A.ST":  "SSAB A",
+    "SSAB-B.ST":  "SSAB B",
+    "SWED-A.ST":  "Swedbank A",
+    "TEL2-B.ST":  "Tele2 B",
+    "TELIA.ST":   "Telia",
+    "THULE.ST":   "Thule Group",
+    "VOLV-A.ST":  "Volvo A",
+    # ── OMX Mid Cap ────────────────────────────────────────────────────────
+    "BILI-A.ST":  "Billerud A",
+    "BTS-B.ST":   "BTS Group B",
+    "BUFAB.ST":   "Bufab Group",
+    "CLAS-B.ST":  "Clas Ohlson B",
+    "COOR.ST":    "Coor Service",
+    "DIOS.ST":    "Dios Fastigheter",
+    "DUNI.ST":    "Duni Group",
+    "ELUX-B.ST":  "Electrolux B",
+    "ENEA.ST":    "Enea",
+    "HANZA.ST":   "Hanza",
+    "HEMF.ST":    "Hemfosa",
+    "HOLM-B.ST":  "Holmen B",
+    "INTRUM.ST":  "Intrum",
+    "ITAB.ST":    "ITAB Shop Concept",
+    "JM.ST":      "JM",
+    "LAGR-B.ST":  "Lagercrantz B",
+    "MTG-B.ST":   "MTG B",
+    "NCC-A.ST":   "NCC A",
+    "OEM-B.ST":   "OEM International B",
+    "PEAB-B.ST":  "Peab B",
+    "SAGAX-A.ST": "Sagax A",
+    "SDIP-B.ST":  "Sdiptech B",
+    "SDIP-D.ST":  "Sdiptech D",
+    "SYSR.ST":    "Systemair",
+    "WIHL.ST":    "Wihlborgs",
+    "XANO-B.ST":  "Xano Industri B",
 }
 
 SECTOR_ETF: dict[str, str] = {
@@ -966,8 +1034,8 @@ def _build_regional_watchlist(sections: dict[str, list[dict]]) -> list:
         "Sverige":          ("SVERIGE  —  Topp 5  ·  RS vs OMXS30",       HexColor("#005B9F")),
         "USA":              ("USA  —  Topp 5  ·  RS vs S&P 500",           HexColor("#B22234")),
         "Europa":           ("EUROPA  —  Topp 5  ·  RS vs STOXX50E",       HexColor("#003399")),
-        "global_excellence":("GLOBAL EXCELLENS  —  Topp 5 kvalificerade  ·  "
-                             "KONF=3, ADX >= 22, RS >= 3%",                 HexColor("#92400E")),
+        "global_excellence":("GLOBAL EXCELLENS  —  Starka kandidater  ·  "
+                             "KONF >= 2  och  RS >= 5%",                    HexColor("#92400E")),
     }
     ORDER = ["Sverige", "USA", "Europa", "global_excellence"]
 
@@ -999,9 +1067,12 @@ def _build_regional_watchlist(sections: dict[str, list[dict]]) -> list:
                       if (adx is not None and adx >= BUY_ADX_MIN)
                       else '<font color="#78716C">Svag</font>')
 
+        display_name = (COMPANY_NAMES.get(s["ticker"])
+                        or s.get("name", "")
+                        or s["ticker"])[:22]
         return [
             _p(s["ticker"],                              CB),
-            _p(s.get("name", s["ticker"])[:22],          CN),
+            _p(display_name,                             CN),
             _p(region_abbr,                              CC),
             _p(f"{s['price']:.2f}",                      CR),
             _p(conf_html if isinstance(conf_html, str) else "—", CBC),
