@@ -1,0 +1,37 @@
+name: TrendRadar — Veckorapport
+
+on:
+  schedule:
+    - cron: "0 18 * * 0"   # Söndag 18:00 UTC = 20:00 CEST (sommartid)
+  workflow_dispatch:         # Tillåter manuell körning från GitHub-gränssnittet
+
+jobs:
+  generate-and-send:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Hämta kod
+        uses: actions/checkout@v4
+
+      - name: Sätt upp Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Installera dependencies
+        run: pip install -r requirements.txt
+
+      - name: Kör TrendRadar
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+        run: python main.py 2>&1 | tee run.log
+
+      - name: Spara run.log som artifact
+        if: always()   # Sparar loggen även om steget ovan misslyckas
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-log-${{ github.run_id }}
+          path: run.log
+          retention-days: 30
