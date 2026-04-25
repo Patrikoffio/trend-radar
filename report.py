@@ -344,18 +344,21 @@ def _build_summary(
     all_signals: list[dict],
     portfolio: list[dict],
     sector_returns: dict[str, float],
+    n_pool: int = 0,
 ) -> list:
-    n_q  = sum(1 for s in all_signals if s.get("qualified"))
-    n_t  = len(all_signals)
+    n_q   = sum(1 for s in all_signals if s.get("qualified"))
+    # Visa mot hela förfiltrerade poolen om vi har den; annars mot de 14 curated
+    n_ref = n_pool if n_pool > 0 else len(all_signals)
+    ref_label = "förfiltrerade" if n_pool > 0 else "bevakade"
 
     if n_q == 0:
-        qual_line = f"Inga aktier kvalificerar för köp denna vecka ({n_t} bevakade)."
+        qual_line = f"Inga aktier kvalificerar för köp denna vecka ({n_ref} {ref_label})."
     elif n_q == 1:
         names = [COMPANY_NAMES.get(s["ticker"], s["ticker"]) for s in portfolio]
-        qual_line = f"<b>1</b> av {n_t} aktier kvalificerar: {', '.join(names)}."
+        qual_line = f"<b>1</b> av {n_ref} {ref_label} aktier kvalificerar: {', '.join(names)}."
     else:
         names = [COMPANY_NAMES.get(s["ticker"], s["ticker"]) for s in portfolio]
-        qual_line = f"<b>{n_q}</b> av {n_t} aktier kvalificerar: {', '.join(names)}."
+        qual_line = f"<b>{n_q}</b> av {n_ref} {ref_label} aktier kvalificerar: {', '.join(names)}."
 
     # Sektorprestanda från riktiga ETF-siffror
     ranked = sorted(sector_returns.items(), key=lambda x: x[1], reverse=True)
@@ -953,6 +956,50 @@ def _build_forecast(fwd: dict | None) -> list:
     ])]
 
 
+def _build_universe_watchlist(rs_list: list[dict]) -> list:
+    """
+    Visar topp-20 aktier från hela bevakningspoolen, sorterade efter RS (3M vs OMXS30).
+    Enklare tabell än curated-watchlistan — visar RS, 1M-avkastning och trend.
+    """
+    if not rs_list:
+        return []
+
+    cw = [cm * x for x in [1.8, 3.2, 1.4, 1.9, 1.8, 1.8, 2.5]]
+    header = [_p(h, CH) for h in
+              ["TICKER", "BOLAG", "REG.", "PRIS", "RS (3M)", "1M AVK.", "TREND"]]
+    rows = [header]
+
+    for s in rs_list:
+        region_abbr = {"Sverige": "SWE", "USA": "USA", "Europa": "EUR"}.get(
+            s.get("region", ""), s.get("region", "")[:3].upper()
+        )
+        ret_1m = s.get("ret_1m", 0.0)
+        trend_html = (
+            '<font color="#15803D"><b>Positiv</b></font>' if ret_1m > 0
+            else '<font color="#DC2626">Negativ</font>'
+        )
+        rows.append([
+            _p(s["ticker"],                  CB),
+            _p(s.get("name", s["ticker"]),   CN),
+            _p(region_abbr,                  CC),
+            _p(f"{s['price']:.2f}",          CR),
+            _p(_html_color(s["rs_pct"]),      CBR),
+            _p(_html_color(ret_1m, fmt=".1f"), CBR),
+            _p(trend_html,                   CN),
+        ])
+
+    t = LongTable(rows, colWidths=cw, repeatRows=1)
+    t.setStyle(TableStyle(_base_table_style()))
+
+    return [
+        _p(f"KOMPLETT BEVAKNINGSLISTA  —  Topp {len(rs_list)} aktier av hela universumet, "
+           f"sorterat efter RS (3M vs OMXS30) fallande", SECHEAD_S),
+        _hr(),
+        t,
+        _spacer(6),
+    ]
+
+
 def _build_disclaimer() -> list:
     text = (
         "<b>Riskvarning:</b> Denna rapport är inte finansiell rådgivning. "
@@ -984,6 +1031,7 @@ def generate_pdf(
     portfolio: list[dict] | None = None,
     market_context: dict | None = None,
     universe_stats: dict | None = None,
+    universe_rs: list[dict] | None = None,
 ) -> None:
     _tmp_files.clear()
 
@@ -1021,12 +1069,13 @@ def generate_pdf(
     print("Hämtar sektor-ETF-data...", flush=True)
     sector_returns = _sector_etf_returns()
 
-    # ── Univsersum-stats rad (visas i header-area) ─────────────────────────
     n_universe  = us.get("n_universe",  len(all_signals))
     n_filtered  = us.get("n_filtered",  len(all_signals))
     n_qualified = us.get("n_qualified", len(qualified_all))
     n_portfolio = us.get("n_portfolio", len(portfolio))
-    pool_line   = (
+
+    # ── Bevakningspool-rad under headern ──────────────────────────────────
+    pool_line = (
         f"Bevakningspool: <b>{n_universe}</b> aktier  ·  "
         f"<b>{n_filtered}</b> efter förfilter  ·  "
         f"<b>{n_qualified}</b> kvalificerade  ·  "
@@ -1038,7 +1087,9 @@ def generate_pdf(
     story.append(_p(pool_line, _ps("pl", fontName=_SANS, fontSize=8,
                                     textColor=GRAY, leading=12)))
     story.append(_spacer(3))
-    story += _build_summary(all_signals, portfolio, sector_returns)
+    # Skicka filtrerad pool-storlek till summary för korrekt text
+    story += _build_summary(all_signals, portfolio, sector_returns,
+                             n_pool=n_filtered)
     story += _build_performance(ytd)
     # ── Marknadskontext ────────────────────────────────────────────────────
     story += _build_regime(mc.get("regime"))
@@ -1047,7 +1098,11 @@ def generate_pdf(
     # ──────────────────────────────────────────────────────────────────────
     story += _build_portfolio(portfolio)
     story += _build_reserves(overflow, near_buys)
-    story += _build_watchlist(all_signals)
+    # Bevakningslistan: använd universum-RS om tillgänglig, annars curated
+    if universe_rs:
+        story += _build_universe_watchlist(universe_rs)
+    else:
+        story += _build_watchlist(all_signals)
     story += _build_disclaimer()
 
     try:

@@ -17,7 +17,7 @@ from email_sender import send_email
 from market_context import get_fear_greed, get_forward_estimate, get_regime
 from report import generate_pdf
 from signals import calculate_signals, size_positions
-from universe import apply_prefilter, get_full_universe
+from universe import apply_prefilter, get_full_universe  # top-20 RS flödar till report
 
 STOCKS: dict[str, list[str]] = {
     "Sverige": ["VOLV-B.ST", "ATCO-A.ST", "SAND.ST", "HEXA-B.ST", "INVE-B.ST", "ERIC-B.ST"],
@@ -56,7 +56,7 @@ def run(send: bool = True) -> None:
                 results[region].append(data)
                 dataframes[ticker] = df
                 qual = "✓" if data["qualified"] else " "
-                print(f"  {qual} {ticker:12s} {data['signal']:12s}  konf={data['confluence']:+d}  ADX={data['adx']:.0f}  RS={data['rs_pct']:+.1f}%")
+                print(f"  {qual} {ticker:12s} {data['signal']:12s}  konf={data['confluence']:+d}  ADX={data['adx']:.1f}  RS={data['rs_pct']:+.1f}%")
             except Exception as exc:
                 print(f"  {ticker}: FEL — {exc}")
         print()
@@ -77,16 +77,21 @@ def run(send: bool = True) -> None:
         print("  Inga aktier kvalificerar sig denna vecka.")
     print()
 
-    # ── Universum-statistik ────────────────────────────────────────────────
+    # ── Universum-statistik + RS top-20 ───────────────────────────────────
     print("=== Bevakningspool ===")
     _t0 = time.time()
     n_universe = n_filtered = 0
+    universe_top20: list[dict] = []
     try:
-        universe = get_full_universe()
+        universe   = get_full_universe()
         n_universe = len(universe)
-        filtered  = apply_prefilter(universe)
+        print(f"  Hämtade {n_universe} aktier...", flush=True)
+        filtered, universe_top20 = apply_prefilter(universe, top_rs_n=20)
         n_filtered = len(filtered)
-        print(f"  Total: {n_universe}  →  efter förfilter: {n_filtered}  ({time.time()-_t0:.1f}s)")
+        print(f"  {n_universe} → {n_filtered} efter förfilter  ({time.time()-_t0:.1f}s)")
+        if universe_top20:
+            top3 = "  ".join(f"{s['ticker']} {s['rs_pct']:+.1f}%" for s in universe_top20[:3])
+            print(f"  Top-3 RS: {top3}")
     except Exception as e:
         print(f"  FEL: {e}")
     print()
@@ -143,7 +148,8 @@ def run(send: bool = True) -> None:
         return "\n".join(lines) + "\n"
 
     pdf_path = f"rapport_{date_str}.pdf"
-    generate_pdf(results, pdf_path, dataframes, portfolio, mc, universe_stats)
+    generate_pdf(results, pdf_path, dataframes, portfolio, mc,
+                 universe_stats, universe_top20 if universe_top20 else None)
 
     if send:
         send_email(pdf_path, date_str, _mc_summary())
