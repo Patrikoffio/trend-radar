@@ -22,6 +22,14 @@ jobs:
       - name: Installera dependencies
         run: pip install -r requirements.txt
 
+      - name: Verifiera secrets
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+        run: |
+          echo "RESEND_API_KEY set: $([[ -n "$RESEND_API_KEY" ]] && echo YES || echo NO)"
+          echo "RECIPIENT_EMAIL set: $([[ -n "$RECIPIENT_EMAIL" ]] && echo YES || echo NO)"
+
       - name: Kör TrendRadar
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
