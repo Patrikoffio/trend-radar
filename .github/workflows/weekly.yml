@@ -1,10 +1,8 @@
 name: TrendRadar — Veckorapport
 
 on:
-  push:
-    branches: [main]         # Tillfälligt: testkörning vid push — tas bort efter verifiering
   schedule:
-    - cron: "0 18 * * 0"   # Söndag 18:00 UTC = 20:00 CEST (sommartid)
+    - cron: "0 18 * * 0"   # Söndag 18:00 UTC = 20:00 CEST / 19:00 CET
   workflow_dispatch:         # Manuell körning från GitHub-gränssnittet
 
 jobs:
