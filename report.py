@@ -958,42 +958,61 @@ def _build_forecast(fwd: dict | None) -> list:
 
 def _build_universe_watchlist(rs_list: list[dict]) -> list:
     """
-    Visar topp-20 aktier från hela bevakningspoolen, sorterade efter RS (3M vs OMXS30).
-    Enklare tabell än curated-watchlistan — visar RS, 1M-avkastning och trend.
+    Topp-20 aktier från hela bevakningspoolen med 10 kolumner.
+    RS är beräknad mot aktiens eget hemmaindex (^OMX / ^GSPC / ^STOXX50E).
+    Sorteras fallande efter RS — nu jämförbart över regioner.
     """
     if not rs_list:
         return []
 
-    cw = [cm * x for x in [1.8, 3.2, 1.4, 1.9, 1.8, 1.8, 2.5]]
+    # 10 kolumner — totalt 16.2 cm, passar i CW (~17.4 cm)
+    cw = [cm * x for x in [1.7, 2.6, 1.1, 1.7, 1.2, 1.2, 1.4, 1.3, 1.3, 2.1]]
     header = [_p(h, CH) for h in
-              ["TICKER", "BOLAG", "REG.", "PRIS", "RS (3M)", "1M AVK.", "TREND"]]
+              ["TICKER", "BOLAG", "REG", "PRIS",
+               "KONF", "ADX", "RS", "1M", "KVAL", "TREND"]]
     rows = [header]
 
     for s in rs_list:
         region_abbr = {"Sverige": "SWE", "USA": "USA", "Europa": "EUR"}.get(
             s.get("region", ""), s.get("region", "")[:3].upper()
         )
+        conf   = s.get("confluence")
+        adx    = s.get("adx")
+        qual   = s.get("qualified")
         ret_1m = s.get("ret_1m", 0.0)
-        trend_html = (
-            '<font color="#15803D"><b>Positiv</b></font>' if ret_1m > 0
-            else '<font color="#DC2626">Negativ</font>'
+
+        conf_html  = _confluence_badge(conf) if conf is not None else _p("—", CC)
+        adx_str    = f"{adx:.1f}" if adx is not None else "—"
+        kval_html  = (
+            '<font color="#15803D"><b>✓</b></font>' if qual is True
+            else ('<font color="#78716C">–</font>' if qual is False else "—")
         )
+        trend_html = (
+            '<font color="#15803D"><b>Stark</b></font>'
+            if (adx is not None and adx >= BUY_ADX_MIN)
+            else '<font color="#78716C">Svag</font>'
+        )
+
         rows.append([
-            _p(s["ticker"],                  CB),
-            _p(s.get("name", s["ticker"]),   CN),
-            _p(region_abbr,                  CC),
-            _p(f"{s['price']:.2f}",          CR),
-            _p(_html_color(s["rs_pct"]),      CBR),
-            _p(_html_color(ret_1m, fmt=".1f"), CBR),
-            _p(trend_html,                   CN),
+            _p(s["ticker"],                              CB),
+            _p(s.get("name", s["ticker"])[:22],          CN),
+            _p(region_abbr,                              CC),
+            _p(f"{s['price']:.2f}",                      CR),
+            _p(conf_html if isinstance(conf_html, str) else "—", CBC),
+            _p(adx_str,                                  CR),
+            _p(_html_color(s["rs_pct"]),                  CBR),
+            _p(_html_color(ret_1m, fmt=".1f"),             CBR),
+            _p(kval_html,                                CC),
+            _p(trend_html,                               CN),
         ])
 
     t = LongTable(rows, colWidths=cw, repeatRows=1)
     t.setStyle(TableStyle(_base_table_style()))
 
+    bench_note = "RS vs hemmaindex (SWE→^OMX, USA→^GSPC, EUR→^STOXX50E)"
     return [
-        _p(f"KOMPLETT BEVAKNINGSLISTA  —  Topp {len(rs_list)} aktier av hela universumet, "
-           f"sorterat efter RS (3M vs OMXS30) fallande", SECHEAD_S),
+        _p(f"KOMPLETT BEVAKNINGSLISTA  —  Topp {len(rs_list)} av bevakningspoolen  ·  "
+           f"{bench_note}", SECHEAD_S),
         _hr(),
         t,
         _spacer(6),

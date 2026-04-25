@@ -229,12 +229,36 @@ def _extract_series(raw, ticker: str, col: str, n_tickers: int):
         return None
 
 
+# Hemmaindex per region — RS jämförs mot eget index, inte alltid OMXS30
+_HOME_BENCHMARKS: dict[str, str] = {
+    "Sverige": "^OMX",       # OMXS30
+    "USA":     "^GSPC",      # S&P 500
+    "Europa":  "^STOXX50E",  # Euro Stoxx 50
+}
+
+
+def _fetch_benchmark_3m(symbols: list[str], period: str = "6mo") -> dict[str, float]:
+    """Hämtar 3M-avkastning (63 handelsdagar) för en lista index-symboler."""
+    result: dict[str, float] = {}
+    for sym in symbols:
+        try:
+            df = yf.download(sym, period=period, auto_adjust=True, progress=False)
+            c  = df["Close"]
+            if isinstance(c, pd.DataFrame): c = c.iloc[:, 0]
+            c  = c.dropna()
+            if len(c) >= 64:
+                result[sym] = float(c.iloc[-1] / c.iloc[-64] - 1) * 100
+        except Exception:
+            pass
+    return result
+
+
 def apply_prefilter(universe: dict[str, dict],
                     top_rs_n: int = 20) -> tuple[dict[str, dict], list[dict]]:
     """
     ETT batch-nedladdningspass (6 månader) som:
       1. Filtrerar universum: behåll om (a) 1M avkastning > 0% ELLER (b) volym > median
-      2. Beräknar RS (3M vs OMXS30) för alla godkända aktier
+      2. Beräknar RS (3M vs EGET hemmaindex) per region
       3. Returnerar (filtered_dict, top_rs_n_sorted_by_rs)
 
     Cacheas 1 dag. Returvärde: (filtered, rs_top20)
@@ -250,17 +274,12 @@ def apply_prefilter(universe: dict[str, dict],
     CHUNK   = 100
     PERIOD  = "6mo"   # Täcker both filter (1M) och RS (3M=63d)
 
-    # ── Hämta OMXS30-benchmark för RS-beräkning ───────────────────────────────
-    omx_3m = 0.0
-    try:
-        omx_df = yf.download("^OMX", period=PERIOD, auto_adjust=True, progress=False)
-        omx_c  = omx_df["Close"]
-        if isinstance(omx_c, pd.DataFrame): omx_c = omx_c.iloc[:, 0]
-        omx_c  = omx_c.dropna()
-        if len(omx_c) >= 64:
-            omx_3m = float(omx_c.iloc[-1] / omx_c.iloc[-64] - 1) * 100
-    except Exception:
-        pass
+    # ── Hämta regionspecifika benchmarks ─────────────────────────────────────
+    bench_syms = list(_HOME_BENCHMARKS.values())
+    bench_3m   = _fetch_benchmark_3m(bench_syms)
+    # bench_3m exempel: {"^OMX": 2.9, "^GSPC": 3.6, "^STOXX50E": 1.2}
+    print(f"  [universe] Benchmark 3M: " +
+          "  ".join(f"{s}={bench_3m.get(s, 0):.1f}%" for s in bench_syms))
 
     # ── Batch-nedladdning ─────────────────────────────────────────────────────
     close_map:  dict[str, pd.Series] = {}
@@ -312,17 +331,21 @@ def apply_prefilter(universe: dict[str, dict],
 
             if ok:
                 passed.append(tkr)
-                # Beräkna RS om vi har tillräckligt med data
+                # Beräkna RS vs eget hemmaindex om vi har tillräckligt med data
                 if len(close) >= N_3M + 1:
-                    ret_3m = float(close.iloc[-1] / close.iloc[-N_3M - 1] - 1) * 100
+                    region     = universe.get(tkr, {}).get("region", "USA")
+                    bench_sym  = _HOME_BENCHMARKS.get(region, "^GSPC")
+                    bench_ret  = bench_3m.get(bench_sym, 0.0)
+                    ret_3m     = float(close.iloc[-1] / close.iloc[-N_3M - 1] - 1) * 100
                     rs_all.append({
-                        "ticker":  tkr,
-                        "name":    universe[tkr].get("name", tkr),
-                        "region":  universe[tkr].get("region", ""),
-                        "price":   round(float(close.iloc[-1]), 2),
-                        "rs_pct":  round(ret_3m - omx_3m, 1),
-                        "ret_1m":  round(ret_1m * 100, 1),
-                        "ret_3m":  round(ret_3m, 1),
+                        "ticker":    tkr,
+                        "name":      universe[tkr].get("name", tkr),
+                        "region":    region,
+                        "price":     round(float(close.iloc[-1]), 2),
+                        "rs_pct":    round(ret_3m - bench_ret, 1),  # vs hemmaindex
+                        "ret_1m":    round(ret_1m * 100, 1),
+                        "ret_3m":    round(ret_3m, 1),
+                        "benchmark": bench_sym,
                     })
         except Exception:
             pass

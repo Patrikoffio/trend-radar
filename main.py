@@ -92,6 +92,48 @@ def run(send: bool = True) -> None:
         if universe_top20:
             top3 = "  ".join(f"{s['ticker']} {s['rs_pct']:+.1f}%" for s in universe_top20[:3])
             print(f"  Top-3 RS: {top3}")
+
+        # ── Berika topp-20 med fullständiga signaler ──────────────────────
+        if universe_top20:
+            print(f"  Beräknar fullständiga signaler för topp-{len(universe_top20)}...", flush=True)
+            _t1 = time.time()
+            tickers_20 = [s["ticker"] for s in universe_top20]
+            try:
+                raw_20 = yf.download(tickers_20, period=DATA_PERIOD,
+                                     auto_adjust=True, progress=False,
+                                     group_by="ticker")
+                enriched: list[dict] = []
+                for rs_item in universe_top20:
+                    tkr    = rs_item["ticker"]
+                    region = rs_item.get("region", "USA")
+                    try:
+                        # Extrahera tickerns sub-DataFrame
+                        if len(tickers_20) == 1:
+                            df_tkr = raw_20.copy()
+                        else:
+                            lvl0 = raw_20.columns.get_level_values(0)
+                            if tkr not in lvl0:
+                                enriched.append(rs_item); continue
+                            df_tkr = raw_20[tkr].copy()
+                        if isinstance(df_tkr.columns, pd.MultiIndex):
+                            df_tkr.columns = df_tkr.columns.get_level_values(0)
+                        if df_tkr.empty or len(df_tkr) < 60:
+                            enriched.append(rs_item); continue
+
+                        sig = calculate_signals(tkr, df_tkr, region)
+                        # Bevarar universe-RS (vs hemmaindex), inte signals-RS (vs OMXS30)
+                        sig["rs_pct"]  = rs_item["rs_pct"]
+                        sig["ret_1m"]  = rs_item.get("ret_1m", 0.0)
+                        sig["ret_3m"]  = rs_item.get("ret_3m", 0.0)
+                        sig["benchmark"] = rs_item.get("benchmark", "")
+                        enriched.append(sig)
+                    except Exception:
+                        enriched.append(rs_item)
+
+                universe_top20 = enriched
+                print(f"  Signaler klara ({time.time()-_t1:.1f}s)")
+            except Exception as e:
+                print(f"  Batch-signal FEL: {e}")
     except Exception as e:
         print(f"  FEL: {e}")
     print()
