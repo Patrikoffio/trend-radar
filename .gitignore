@@ -1,5 +1,9 @@
 # Hemligheter — laddas ALDRIG upp
 .env
+.git-token
+
+# Genererad cache
+.market_cache.json
 
 # Genererade rapporter
 rapport_*.pdf

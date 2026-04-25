@@ -13,6 +13,7 @@ import pandas as pd
 import yfinance as yf
 
 from email_sender import send_email
+from market_context import get_fear_greed, get_forward_estimate, get_regime
 from report import generate_pdf
 from signals import calculate_signals, size_positions
 
@@ -74,11 +75,55 @@ def run(send: bool = True) -> None:
         print("  Inga aktier kvalificerar sig denna vecka.")
     print()
 
+    # ── Marknadskontext ────────────────────────────────────────────────────
+    print("=== Marknadskontext ===")
+    mc: dict = {}
+
+    try:
+        mc["regime"] = get_regime(all_signals)
+        r = mc["regime"]
+        print(f"  Regim: {r['score']}/5 — {r['label']}  ({r['summary_text']})")
+    except Exception as e:
+        print(f"  Regim: FEL — {e}")
+
+    try:
+        mc["fear_greed"] = get_fear_greed()
+        fg = mc["fear_greed"]
+        print(f"  F&G:   {fg['value']:.0f} ({fg['category']})  källa={fg['source']}")
+    except Exception as e:
+        print(f"  F&G:   FEL — {e}")
+
+    try:
+        mc["forecast"] = get_forward_estimate(mc.get("regime"))
+        fw = mc["forecast"]
+        print(f"  12mån: bear={fw['bear_case']:.0f}%  bas={fw['base_case']:.0f}%  bull={fw['bull_case']:.0f}%")
+    except Exception as e:
+        print(f"  12mån: FEL — {e}")
+
+    print()
+
+    # ── Mejlsammanfattning ─────────────────────────────────────────────────
+    def _mc_summary() -> str:
+        lines = [f"Veckorapport TrendRadar — vecka {datetime.now().isocalendar()[1]}"]
+        if "regime" in mc:
+            r = mc["regime"]
+            lines.append(f"Marknadsregim: {r['score']}/5 — {r['label']}")
+        if "fear_greed" in mc:
+            fg = mc["fear_greed"]
+            lines.append(f"Fear & Greed:  {fg['value']:.0f} ({fg['category']})")
+        if "forecast" in mc:
+            fw = mc["forecast"]
+            lines.append(
+                f"12-mån prognos: bas {fw['base_case']:.0f}%  "
+                f"(intervall {fw['bear_case']:.0f}% – {fw['bull_case']:.0f}%)"
+            )
+        return "\n".join(lines) + "\n"
+
     pdf_path = f"rapport_{date_str}.pdf"
-    generate_pdf(results, pdf_path, dataframes, portfolio)
+    generate_pdf(results, pdf_path, dataframes, portfolio, mc)
 
     if send:
-        send_email(pdf_path, date_str)
+        send_email(pdf_path, date_str, _mc_summary())
     else:
         print("(Mejlutskick hoppat över med --no-email)")
 

@@ -16,10 +16,17 @@ YTD-data lagras i ytd.json och uppdateras manuellt.
 from __future__ import annotations
 
 import json
+import math
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.patches import Wedge
 import pandas as pd
 import yfinance as yf
 
@@ -33,6 +40,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     HRFlowable,
+    Image,
     KeepTogether,
     LongTable,
     Paragraph,
@@ -141,6 +149,26 @@ for _r, _b in _GEORGIA_CANDIDATES:
         break
     except Exception:
         continue
+
+# Försök Calibri (finns om Microsoft Office är installerat)
+_CALIBRI_CANDIDATES = [
+    ("/Library/Fonts/Calibri.ttf",         "/Library/Fonts/Calibrib.ttf"),
+    ("/Library/Fonts/Microsoft/Calibri.ttf","/Library/Fonts/Microsoft/Calibrib.ttf"),
+    (os.path.expanduser("~/Library/Fonts/Calibri.ttf"),
+     os.path.expanduser("~/Library/Fonts/Calibrib.ttf")),
+    ("C:/Windows/Fonts/calibri.ttf",        "C:/Windows/Fonts/calibrib.ttf"),
+]
+for _r, _b in _CALIBRI_CANDIDATES:
+    try:
+        pdfmetrics.registerFont(TTFont("Calibri",      _r))
+        pdfmetrics.registerFont(TTFont("Calibri-Bold", _b))
+        _SANS, _SANS_BOLD = "Calibri", "Calibri-Bold"
+        break
+    except Exception:
+        continue
+
+# Temp-filer skapade av matplotlib — städas upp efter varje rapport
+_tmp_files: list[str] = []
 
 # --------------------------------------------------------------------------- #
 # Stilar
@@ -577,6 +605,310 @@ def _build_watchlist(all_signals: list[dict]) -> list:
     ]
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Bildgeneratorer (matplotlib → temp-PNG → ReportLab Image)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _make_gauge_image(value: float) -> str:
+    """Halvskiva Fear & Greed-mätare. Returnerar sökväg till temp-PNG."""
+    fig, ax = plt.subplots(figsize=(3.4, 2.0), dpi=120)
+    ax.set_xlim(-1.3, 1.3)
+    ax.set_ylim(-0.25, 1.1)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    fig.patch.set_facecolor("white")
+
+    BANDS = [
+        (144, 180, "#DC2626"),  # 0–20  Extrem rädsla
+        (108, 144, "#EA580C"),  # 20–40 Rädsla
+        ( 72, 108, "#D4A017"),  # 40–60 Neutral
+        ( 36,  72, "#65A30D"),  # 60–80 Girighet
+        (  0,  36, "#15803D"),  # 80–100 Extrem girighet
+    ]
+    for t1, t2, color in BANDS:
+        ax.add_patch(Wedge((0, 0), 1.0, t1, t2, width=0.36,
+                           facecolor=color, edgecolor="white", linewidth=0.8, zorder=1))
+
+    angle_rad = math.radians(180.0 - value * 1.8)
+    nx, ny = 0.70 * math.cos(angle_rad), 0.70 * math.sin(angle_rad)
+    ax.annotate("", xy=(nx, ny), xytext=(0, 0),
+                arrowprops=dict(arrowstyle="->", color="#1C1917", lw=2.0, mutation_scale=14),
+                zorder=3)
+    ax.add_patch(plt.Circle((0, 0), 0.06, color="#1C1917", zorder=4))
+
+    ax.text(-1.15, -0.05, "0",   ha="center", va="center", fontsize=7, color="#78716C")
+    ax.text( 1.15, -0.05, "100", ha="center", va="center", fontsize=7, color="#78716C")
+    ax.text( 0.0,  1.05,  "50",  ha="center", va="center", fontsize=7, color="#78716C")
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    fig.savefig(tmp.name, dpi=120, bbox_inches="tight", facecolor="white", pad_inches=0.05)
+    plt.close(fig)
+    _tmp_files.append(tmp.name)
+    return tmp.name
+
+
+def _make_forecast_bar(bear: float, base: float, bull: float,
+                        ci68_lo: float, ci68_hi: float,
+                        ci95_lo: float, ci95_hi: float) -> str:
+    """Horisontell konfidensintervall-stapel. Returnerar sökväg till temp-PNG."""
+    x_min = min(ci95_lo - 5, -20)
+    x_max = max(ci95_hi + 5, 30)
+
+    fig, ax = plt.subplots(figsize=(5.8, 1.4), dpi=110)
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(0, 3.2)
+    ax.axis("off")
+    fig.patch.set_facecolor("white")
+
+    ax.barh(1.2, ci95_hi - ci95_lo, left=ci95_lo, height=0.55,
+            color="#FDE68A", alpha=0.95, zorder=1)
+    ax.barh(1.2, ci68_hi - ci68_lo, left=ci68_lo, height=0.55,
+            color="#D97706", alpha=0.85, zorder=2)
+    ax.axvline(x=base, color="#1C1917", lw=1.8, zorder=3, ymin=0.22, ymax=0.88)
+    ax.axvline(x=0,    color="#78716C", lw=0.7, linestyle="--", zorder=2, ymin=0.15, ymax=0.88)
+
+    for x, lbl, fc in [(bear, f"Bear\n{bear:.0f}%", "#DC2626"),
+                        (base, f"Bas\n{base:.0f}%",  "#1C1917"),
+                        (bull, f"Bull\n{bull:.0f}%", "#15803D")]:
+        ax.text(x, 2.3, lbl, ha="center", va="bottom", fontsize=7.5,
+                fontweight="bold" if x == base else "normal", color=fc)
+
+    ax.text((ci95_lo + ci95_hi) / 2, 0.75, "95% KI", ha="center", fontsize=6, color="#78716C")
+    ax.text((ci68_lo + ci68_hi) / 2, 0.95, "68% KI", ha="center", fontsize=6, color="white", fontweight="bold")
+
+    step = 10
+    for x in range(int(x_min // step) * step, int(x_max) + 1, step):
+        ax.text(x, 0.35, f"{x}%", ha="center", va="top", fontsize=5.5, color="#78716C")
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    fig.savefig(tmp.name, dpi=110, bbox_inches="tight", facecolor="white", pad_inches=0.05)
+    plt.close(fig)
+    _tmp_files.append(tmp.name)
+    return tmp.name
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Sektionsbyggare — marknadskontext
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_STATUS_COLORS = {
+    "TJUR": "#15803D", "BRED": "#15803D", "JÄMNT": "#15803D",
+    "LUGN": "#15803D", "NORMAL": "#78716C",
+    "BJÖRN": "#DC2626", "SMAL": "#DC2626", "EXTREM": "#DC2626", "EXTREMT": "#DC2626",
+    "HÖGT": "#EA580C",
+}
+
+
+def _build_regime(regime: dict | None) -> list:
+    if not regime:
+        return [_p("MARKNADSREGIM", SECHEAD_S), _hr(),
+                _p("Data ej tillgänglig.", BODY_S), _spacer(4)]
+
+    score = regime["score"]
+    if score >= 4:   sc, sc_lt = "#15803D", "#DCFCE7"
+    elif score == 3: sc, sc_lt = "#D97706", "#FEF3C7"
+    else:            sc, sc_lt = "#DC2626", "#FEE2E2"
+
+    # ── Score-box + sammanfattning ──────────────────────────────────────────
+    ht = Table([[
+        _p(f"<b>{score}</b>",
+           _ps(f"sc{score}", fontName=_SERIF_BOLD, fontSize=34,
+               textColor=WHITE, alignment=TA_CENTER, leading=38)),
+        _p(f'<font color="{sc}"><b>{score}/5 — {regime["label"]}</b></font>'
+           f'<br/>{regime["summary_text"]}',
+           _ps(f"sl{score}", fontName=_SANS, fontSize=10, textColor=DARK, leading=14)),
+    ]], colWidths=[cm * 2.5, CW - cm * 2.5])
+    ht.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (0, 0), HexColor(sc)),
+        ("BACKGROUND",    (1, 0), (1, 0), HexColor(sc_lt)),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING",   (0, 0), (0, 0), 6),
+        ("RIGHTPADDING",  (0, 0), (0, 0), 6),
+        ("LEFTPADDING",   (1, 0), (1, 0), 10),
+        ("TOPPADDING",    (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+
+    # ── Detaljtabell ───────────────────────────────────────────────────────
+    _LBL = {"trend": "Trend", "volatility": "Volatilitet",
+             "breadth": "Marknadsbredd", "sectors": "Sektorspridning"}
+
+    drows = [[_p(h, CH) for h in ["Komponent", "Status", "Värde", "Kommentar"]]]
+    for key in ("trend", "volatility", "breadth", "sectors"):
+        d  = regime[key]
+        st = d["status"]
+        c  = _STATUS_COLORS.get(st, "#1C1917")
+        v  = f'{d["value"]:.1f}{"pp" if key=="sectors" else "%" if key=="breadth" else ""}'
+        drows.append([
+            _p(_LBL[key],                                  CB),
+            _p(f'<b><font color="{c}">{st}</font></b>',    CBC),
+            _p(v,                                          CR),
+            _p(d["comment"],                               CN),
+        ])
+
+    dt = Table(drows, colWidths=[cm * x for x in [3.5, 2.5, 2.0, 9.4]])
+    dt.setStyle(TableStyle(_base_table_style()))
+
+    return [KeepTogether([
+        _p("MARKNADSREGIM", SECHEAD_S),
+        _hr(),
+        ht,
+        _spacer(2),
+        dt,
+        _spacer(5),
+    ])]
+
+
+def _build_fear_greed(fg: dict | None) -> list:
+    if not fg:
+        return [_p("FEAR & GREED INDEX", SECHEAD_S), _hr(),
+                _p("Data ej tillgänglig.", BODY_S), _spacer(4)]
+
+    value    = fg["value"]
+    category = fg["category"]
+    change   = fg["change_7d"]
+
+    CAT_COLORS = {
+        "Extrem rädsla": "#DC2626", "Rädsla": "#EA580C",
+        "Neutral": "#78716C", "Girighet": "#65A30D", "Extrem girighet": "#15803D",
+    }
+    INTERP = {
+        "KÖPLÄGE":          "Extrem rädsla skapar historiskt köptillfällen.",
+        "OBSERVATIONSLÄGE": "Marknaden är rädd — möjligheter kan uppstå.",
+        "NEUTRAL":          "Marknaden är i balans utan tydliga extremer.",
+        "VARSAMHET":        "Girighet dominerar — ökad risk för korrektion.",
+        "ÖVERHETTAT":       "Extrem girighet — historiskt en försäljningssignal.",
+    }
+    cc = CAT_COLORS.get(category, "#1C1917")
+
+    gauge_path = _make_gauge_image(value)
+    gauge_img  = Image(gauge_path, width=5.6 * cm, height=3.4 * cm)
+
+    if change is not None:
+        arrow  = "▲" if change > 0 else ("▼" if change < 0 else "→")
+        chg_c  = "#15803D" if change > 0 else ("#DC2626" if change < 0 else "#78716C")
+        chg_str = f'<font color="{chg_c}"><b>{arrow} {abs(change):.1f} senaste veckan</b></font>'
+    else:
+        chg_str = '<font color="#78716C">7d-förändring ej tillgänglig</font>'
+
+    text = Table([
+        [_p(f'<font color="{cc}"><b>{value:.0f}</b></font>',
+            _ps("fgv", fontName=_SERIF_BOLD, fontSize=34, textColor=HexColor(cc),
+                leading=38))],
+        [_p(f'<font color="{cc}"><b>{category}</b></font>  ·  {fg["signal"]}',
+            _ps("fgc", fontName=_SANS, fontSize=9, textColor=DARK, leading=12))],
+        [_p(chg_str, _ps("fgch", fontName=_SANS, fontSize=9, leading=12))],
+        [_spacer(2)],
+        [_p(INTERP.get(fg["signal"], ""), BODY_S)],
+        [_p(f'Källa: {fg["source"]}', SMALL_S)],
+    ], colWidths=[CW - cm * 6.3])
+    text.setStyle(TableStyle([
+        ("LEFTPADDING",  (0, 0), (-1, -1), 8),
+        ("TOPPADDING",   (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 2),
+    ]))
+
+    row = Table([[gauge_img, text]], colWidths=[cm * 6.3, CW - cm * 6.3])
+    row.setStyle(TableStyle([
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 0),
+        ("TOPPADDING",    (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+
+    return [KeepTogether([
+        _p("FEAR & GREED INDEX", SECHEAD_S),
+        _hr(),
+        row,
+        _spacer(5),
+    ])]
+
+
+def _build_forecast(fwd: dict | None) -> list:
+    if not fwd:
+        return [_p("12-MÅNADERS PROGNOS", SECHEAD_S), _hr(),
+                _p("Data ej tillgänglig.", BODY_S), _spacer(4)]
+
+    bear, base, bull = fwd["bear_case"], fwd["base_case"], fwd["bull_case"]
+    col_w = CW / 3
+
+    # ── Tre stora tal ────────────────────────────────────────────────────────
+    nums = Table([
+        [_p("Bear case", _ps("nb_l", fontName=_SANS, fontSize=7, textColor=GRAY, alignment=TA_CENTER)),
+         _p("Base case", _ps("nm_l", fontName=_SANS, fontSize=7, textColor=GRAY, alignment=TA_CENTER)),
+         _p("Bull case", _ps("nu_l", fontName=_SANS, fontSize=7, textColor=GRAY, alignment=TA_CENTER))],
+        [_p(_signed(bear, ".0f") + "%",
+            _ps("nb", fontName=_SERIF_BOLD, fontSize=26, textColor=RED,   alignment=TA_CENTER, leading=30)),
+         _p(_signed(base, ".0f") + "%",
+            _ps("nm", fontName=_SERIF_BOLD, fontSize=32, textColor=DARK,  alignment=TA_CENTER, leading=36)),
+         _p(_signed(bull, ".0f") + "%",
+            _ps("nu", fontName=_SERIF_BOLD, fontSize=26, textColor=GREEN, alignment=TA_CENTER, leading=30))],
+    ], colWidths=[col_w, col_w, col_w])
+    nums.setStyle(TableStyle([
+        ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING",    (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LINERIGHT",     (0, 0), (0, -1), 0.5, GRAY_RULE),
+        ("LINERIGHT",     (1, 0), (1, -1), 0.5, GRAY_RULE),
+    ]))
+
+    # ── KI-stapel ────────────────────────────────────────────────────────────
+    bar_path = _make_forecast_bar(
+        bear, base, bull,
+        fwd["ci_68"][0], fwd["ci_68"][1],
+        fwd["ci_95"][0], fwd["ci_95"][1],
+    )
+    bar_img = Image(bar_path, width=CW, height=2.1 * cm)
+
+    # ── Faktorer ─────────────────────────────────────────────────────────────
+    factor_rows: list = [[_p("<b>Vad driver prognosen:</b>", BODY_B)]]
+    for name, val in fwd["factors"].items():
+        c = "#15803D" if val > 0 else ("#DC2626" if val < 0 else "#78716C")
+        factor_rows.append([_p(
+            f'• {name}: <font color="{c}"><b>{_signed(val, ".1f")}%</b></font>', BODY_S
+        )])
+    inp = fwd["inputs"]
+    factor_rows.append([_p(
+        f'Indata: CAPE={inp["cape"]:.0f}  ·  Ränta={inp["rate_current"]:.1f}%  ·  '
+        f'Vol={inp["volatility"]:.0f}%  ·  Regime={inp["regime_score"]}/5',
+        SMALL_S,
+    )])
+    ft = Table(factor_rows, colWidths=[CW])
+    ft.setStyle(TableStyle([
+        ("LEFTPADDING",  (0, 0), (-1, -1), 0),
+        ("TOPPADDING",   (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING",(0, 0), (-1, -1), 1),
+    ]))
+
+    # ── Honesty disclaimer ───────────────────────────────────────────────────
+    disc = Table([[_p(
+        f'<b>Observera:</b> {fwd["honesty_warning"]}', DISC_S
+    )]], colWidths=[CW])
+    disc.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, -1), ORANGE_LIGHT),
+        ("LINEABOVE",     (0, 0), (-1,  0), 1.5, ORANGE),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
+        ("TOPPADDING",    (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+
+    return [KeepTogether([
+        _p("12-MÅNADERS PROGNOS", SECHEAD_S),
+        _hr(),
+        nums,
+        _spacer(2),
+        bar_img,
+        _spacer(3),
+        ft,
+        _spacer(3),
+        disc,
+        _spacer(5),
+    ])]
+
+
 def _build_disclaimer() -> list:
     text = (
         "<b>Riskvarning:</b> Denna rapport är inte finansiell rådgivning. "
@@ -606,10 +938,14 @@ def generate_pdf(
     output_path: str,
     dataframes: dict | None = None,
     portfolio: list[dict] | None = None,
+    market_context: dict | None = None,
 ) -> None:
+    _tmp_files.clear()
+
     all_signals = [s for stocks in results.values() for s in stocks]
     portfolio   = portfolio or []
     portfolio_tickers = {s["ticker"] for s in portfolio}
+    mc = market_context or {}
 
     qualified_all = [s for s in all_signals if s.get("qualified")]
     overflow  = [s for s in qualified_all if s["ticker"] not in portfolio_tickers]
@@ -618,10 +954,10 @@ def generate_pdf(
         key=lambda s: s.get("rs_pct", 0), reverse=True,
     )
 
-    now       = datetime.now()
-    week_num  = now.isocalendar()[1]
-    date_lbl  = f"{now.day} {MONTHS_SV[now.month]} {now.year}"
-    ytd       = _load_ytd()
+    now      = datetime.now()
+    week_num = now.isocalendar()[1]
+    date_lbl = f"{now.day} {MONTHS_SV[now.month]} {now.year}"
+    ytd      = _load_ytd()
 
     doc = SimpleDocTemplate(
         output_path,
@@ -639,10 +975,23 @@ def generate_pdf(
     story += _build_header(date_lbl, week_num)
     story += _build_summary(all_signals, portfolio, sector_returns)
     story += _build_performance(ytd)
+    # ── Tre nya marknadskontext-sektioner ─────────────────────────────────
+    story += _build_regime(mc.get("regime"))
+    story += _build_fear_greed(mc.get("fear_greed"))
+    story += _build_forecast(mc.get("forecast"))
+    # ─────────────────────────────────────────────────────────────────────
     story += _build_portfolio(portfolio)
     story += _build_reserves(overflow, near_buys)
     story += _build_watchlist(all_signals)
     story += _build_disclaimer()
 
-    doc.build(story)
-    print(f"PDF skapad: {output_path}")
+    try:
+        doc.build(story)
+        print(f"PDF skapad: {output_path}")
+    finally:
+        for f in _tmp_files:
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
+        _tmp_files.clear()

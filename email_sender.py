@@ -20,7 +20,7 @@ if Path(".env").exists():
 SENDER = "onboarding@resend.dev"
 
 
-def send_email(pdf_path: str, date_str: str) -> None:
+def send_email(pdf_path: str, date_str: str, summary: str = "") -> None:
     api_key   = os.getenv("RESEND_API_KEY", "")
     recipient = os.getenv("RECIPIENT_EMAIL", "")
 
@@ -34,15 +34,13 @@ def send_email(pdf_path: str, date_str: str) -> None:
     with open(pdf_path, "rb") as f:
         pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
 
+    body = f"Hej,\n\n{summary}\nPDF-rapporten finns bifogad.\n\n—\nTrendRadar\n(Ej finansiell rådgivning)"
+
     resend.Emails.send({
         "from":    SENDER,
         "to":      [recipient],
         "subject": f"TrendRadar — Handelssignaler {date_str}",
-        "text": (
-            f"Hej,\n\n"
-            f"Din veckorapport för handelssignaler ({date_str}) finns bifogad.\n\n"
-            f"—\nTrendRadar\n(Ej finansiell rådgivning)"
-        ),
+        "text":    body,
         "attachments": [{
             "filename": Path(pdf_path).name,
             "content":  pdf_b64,
